@@ -6,40 +6,45 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  actions: write
+  contents: write
+
+concurrency:
+  group: twice-stock-watcher
+  cancel-in-progress: false
 
 jobs:
   check-stock:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
-
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v6
-
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
-
       - run: pip install -r requirements.txt
-
-      - id: stock
-        name: Check stock and notify
+      - name: Check stock and notify
         env:
           PRODUCT_URL: https://uk.twiceofficial.store/products/online-exclusive-varsity-jacket
           TARGET_SIZES: S,M,L
-          SMTP_HOST: smtp.gmail.com
-          SMTP_PORT: "465"
+          STATE_FILE: stock_state.json
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
         run: python check_stock.py
-
-      - name: Stop watcher after successful restock alert
-        if: steps.stock.outputs.restocked == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow disable "Watch TWICE varsity jacket stock"
+      - name: Save changed stock state
+        run: |
+          if git diff --quiet -- stock_state.json; then
+            echo "Stock state did not change."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stock_state.json
+          git commit -m "Update stock state [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main
