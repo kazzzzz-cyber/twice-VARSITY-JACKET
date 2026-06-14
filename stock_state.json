@@ -1,5 +1,5 @@
 {
   "S": false,
-  "M": false,
-  "L": false
+  "M": true,
+  "L": true
 }
