@@ -1,0 +1,55 @@
+name: Weekly watcher health check
+
+on:
+  schedule:
+    - cron: "15 0 * * 1"
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Send health-check notifications
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          python - <<'PY'
+          import json, os, smtplib, urllib.request
+          from email.message import EmailMessage
+
+          subject = "【正常稼働】TWICE在庫監視"
+          body = (
+              "TWICE VARSITY JACKETの在庫監視は正常に稼働しています。\n\n"
+              "毎週月曜日の午前9時15分ごろ（日本時間）に送信されます。"
+          )
+
+          msg = EmailMessage()
+          msg["Subject"] = subject
+          msg["From"] = os.environ["SMTP_USERNAME"]
+          msg["To"] = os.environ["EMAIL_TO"]
+          msg.set_content(body)
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+              smtp.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
+              smtp.send_message(msg)
+
+          payload = json.dumps({
+              "to": os.environ["LINE_USER_ID"],
+              "messages": [{"type": "text", "text": body}],
+          }).encode("utf-8")
+          req = urllib.request.Request(
+              "https://api.line.me/v2/bot/message/push",
+              data=payload,
+              method="POST",
+              headers={
+                  "Authorization": "Bearer " + os.environ["LINE_CHANNEL_ACCESS_TOKEN"],
+                  "Content-Type": "application/json",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=30) as response:
+              print("LINE status:", response.status)
+          PY
