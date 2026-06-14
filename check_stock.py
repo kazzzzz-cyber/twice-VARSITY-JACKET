@@ -66,15 +66,86 @@ def variants_of(product):
     return found
 
 def page_sold_out(html):
-    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", html, flags=re.I | re.S)
-    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    """
+    商品ページ内には、画像のalt属性などにも商品名が複数回登場する。
+    そのため「価格表示を伴う実際の商品販売欄」を特定して判定する。
+    """
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        html,
+        flags=re.I | re.S,
+    )
+    text = re.sub(
+        r"<style\b[^>]*>.*?</style>",
+        " ",
+        text,
+        flags=re.I | re.S,
+    )
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)
-    m = re.search(r"\[Online Exclusive\]\s*VARSITY JACKET", text, flags=re.I)
-    if not m:
-        raise RuntimeError("商品ページ上で商品名を確認できません。")
-    nearby = text[m.end():m.end()+1200]
-    return bool(re.search(r"\bSold out\b", nearby, flags=re.I))
+
+    title_pattern = (
+        r"\[Online Exclusive\]\s*VARSITY JACKET"
+    )
+
+    matches = list(
+        re.finditer(
+            title_pattern,
+            text,
+            flags=re.I,
+        )
+    )
+
+    if not matches:
+        raise RuntimeError(
+            "商品ページ上で商品名を確認できませんでした。"
+        )
+
+    product_block = None
+
+    for index, match in enumerate(matches):
+        start = match.end()
+
+        if index + 1 < len(matches):
+            end = matches[index + 1].start()
+        else:
+            end = min(len(text), start + 3000)
+
+        candidate = text[start:end]
+
+        # 画像alt等ではなく、価格を含む実際の販売欄を採用する
+        has_price = bool(
+            re.search(
+                r"(Regular price|Sale price|£\s*150|150\.00)",
+                candidate,
+                flags=re.I,
+            )
+        )
+
+        if has_price:
+            product_block = candidate
+            break
+
+    if product_block is None:
+        raise RuntimeError(
+            "VARSITY JACKETの販売欄を特定できませんでした。"
+        )
+
+    sold_out_count = len(
+        re.findall(
+            r"\bSold out\b",
+            product_block,
+            flags=re.I,
+        )
+    )
+
+    print(
+        "Product sales block Sold out count:",
+        sold_out_count,
+    )
+
+    return sold_out_count > 0
 
 def cart_add_check(variant_id):
     s = session()
