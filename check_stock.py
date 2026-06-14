@@ -4,6 +4,8 @@ import re
 import smtplib
 import sys
 from email.message import EmailMessage
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -11,273 +13,205 @@ PRODUCT_URL = os.getenv(
     "PRODUCT_URL",
     "https://uk.twiceofficial.store/products/online-exclusive-varsity-jacket",
 ).rstrip("/")
-
-TARGET_SIZES = [
-    s.strip().upper()
-    for s in os.getenv("TARGET_SIZES", "S,M,L").split(",")
-    if s.strip()
-]
-
+TARGET_SIZES = [s.strip().upper() for s in os.getenv("TARGET_SIZES", "S,M,L").split(",") if s.strip()]
+STATE_FILE = Path(os.getenv("STATE_FILE", "stock_state.json"))
 TIMEOUT = 30
-UA = "Mozilla/5.0 (compatible; TWICEStockWatcher/1.2; personal-use)"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/149 Safari/537.36",
+    "Accept-Language": "en-GB,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
+def origin():
+    p = urlsplit(PRODUCT_URL)
+    return f"{p.scheme}://{p.netloc}"
 
-def request_headers() -> dict:
-    return {
-        "User-Agent": UA,
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-    }
+def session():
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    return s
 
+def get_product(s):
+    r = s.get(PRODUCT_URL + ".js", headers={"Accept": "application/json"},
+              params={"_": os.urandom(8).hex()}, timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()
 
-def get_product() -> dict:
-    response = requests.get(
-        PRODUCT_URL + ".js",
-        headers={
-            **request_headers(),
-            "Accept": "application/json",
-        },
-        timeout=TIMEOUT,
-        params={"_": os.urandom(8).hex()},
-    )
-    response.raise_for_status()
-    return response.json()
+def get_page(s):
+    r = s.get(PRODUCT_URL, headers={"Accept": "text/html"},
+              params={"_": os.urandom(8).hex()}, timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.text
 
-
-def get_product_page() -> str:
-    response = requests.get(
-        PRODUCT_URL,
-        headers={
-            **request_headers(),
-            "Accept": "text/html",
-        },
-        timeout=TIMEOUT,
-        params={"_": os.urandom(8).hex()},
-    )
-    response.raise_for_status()
-    return response.text
-
-
-def normalize_size(variant: dict) -> str:
-    for candidate in (variant.get("option1"), variant.get("title")):
-        if candidate:
-            return str(candidate).strip().upper()
+def size_of(v):
+    for key in ("option1", "option2", "title"):
+        value = str(v.get(key) or "").strip().upper()
+        if value in TARGET_SIZES:
+            return value
     return ""
 
-
-def find_target_variants(product: dict) -> tuple[dict, list[str]]:
+def variants_of(product):
     found = {}
-
-    for variant in product.get("variants", []):
-        size = normalize_size(variant)
-
-        if size in TARGET_SIZES:
+    for v in product.get("variants", []):
+        size = size_of(v)
+        if size:
             found[size] = {
-                "id": str(variant["id"]),
-                "available": bool(variant.get("available")),
-                "title": variant.get("title", size),
+                "id": str(v["id"]),
+                "available_json": bool(v.get("available")),
             }
+    missing = [s for s in TARGET_SIZES if s not in found]
+    if missing:
+        raise RuntimeError("対象サイズが見つかりません: " + ", ".join(missing))
+    return found
 
-    missing = [size for size in TARGET_SIZES if size not in found]
-    return found, missing
+def page_sold_out(html):
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", html, flags=re.I | re.S)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    m = re.search(r"\[Online Exclusive\]\s*VARSITY JACKET", text, flags=re.I)
+    if not m:
+        raise RuntimeError("商品ページ上で商品名を確認できません。")
+    nearby = text[m.end():m.end()+1200]
+    return bool(re.search(r"\bSold out\b", nearby, flags=re.I))
 
-
-def page_says_product_sold_out(page_html: str) -> bool:
-    """
-    商品ページ上のVARSITY JACKET部分がSold out表示か確認する。
-
-    商品一覧内に別商品も存在するため、VARSITY JACKETの見出しから
-    次の商品見出しまでの範囲だけを確認する。
-    """
-    plain = re.sub(r"<script\b[^>]*>.*?</script>", " ", page_html,
-                   flags=re.IGNORECASE | re.DOTALL)
-    plain = re.sub(r"<style\b[^>]*>.*?</style>", " ", plain,
-                   flags=re.IGNORECASE | re.DOTALL)
-    plain = re.sub(r"<[^>]+>", " ", plain)
-    plain = re.sub(r"\s+", " ", plain)
-
-    title = r"\[Online Exclusive\]\s*VARSITY JACKET"
-
-    match = re.search(
-        title + r"(.*?)(?:\[Online Exclusive\]\s*BLACK HOODIE|$)",
-        plain,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    if not match:
-        raise RuntimeError(
-            "商品ページ内でVARSITY JACKETの販売表示を確認できませんでした。"
-        )
-
-    product_block = match.group(1)
-
-    sold_out_count = len(
-        re.findall(r"\bSold out\b", product_block, flags=re.IGNORECASE)
-    )
-
-    print(f"Product page Sold out count: {sold_out_count}")
-
-    return sold_out_count > 0
-
-
-def make_cart_url(variant_id: str) -> str:
-    origin = PRODUCT_URL.split("/products/", 1)[0]
-    return f"{origin}/cart/{variant_id}:1"
-
-
-def send_email(subject: str, body: str) -> None:
-    host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    port = int(os.getenv("SMTP_PORT", "465"))
-    username = os.environ["SMTP_USERNAME"]
-    password = os.environ["SMTP_PASSWORD"]
-    to_addr = os.environ["EMAIL_TO"]
-
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = username
-    msg["To"] = to_addr
-    msg.set_content(body)
-
-    with smtplib.SMTP_SSL(host, port, timeout=TIMEOUT) as smtp:
-        smtp.login(username, password)
-        smtp.send_message(msg)
-
-
-def send_line(body: str) -> None:
-    token = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-    user_id = os.environ["LINE_USER_ID"]
-
-    response = requests.post(
-        "https://api.line.me/v2/bot/message/push",
+def cart_add_check(variant_id):
+    s = session()
+    get_page(s)
+    r = s.post(
+        origin() + "/cart/add.js",
         headers={
-            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
             "Content-Type": "application/json",
+            "Origin": origin(),
+            "Referer": PRODUCT_URL,
         },
-        json={
-            "to": user_id,
-            "messages": [
-                {
-                    "type": "text",
-                    "text": body[:5000],
-                }
-            ],
-        },
+        json={"items": [{"id": int(variant_id), "quantity": 1}]},
         timeout=TIMEOUT,
     )
+    if r.status_code not in (200, 201):
+        return False, f"HTTP {r.status_code}: {r.text[:200]}"
+    try:
+        data = r.json()
+    except ValueError:
+        return False, "JSON応答ではありません。"
+    items = data.get("items", []) if isinstance(data, dict) else []
+    if not items and isinstance(data, dict) and data.get("id"):
+        items = [data]
+    ok = any(
+        str(i.get("variant_id") or i.get("id")) == str(variant_id)
+        and int(i.get("quantity", 0)) >= 1
+        for i in items if isinstance(i, dict)
+    )
+    return ok, "cart/add.js success" if ok else "対象商品を応答内で確認できません。"
 
-    response.raise_for_status()
+def load_state():
+    default = {s: False for s in TARGET_SIZES}
+    if not STATE_FILE.exists():
+        return default
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return {s: bool(data.get(s, False)) for s in TARGET_SIZES}
+    except Exception:
+        return default
 
+def save_state(state):
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-def notify(subject: str, body: str) -> None:
+def cart_url(variant_id):
+    return f"{origin()}/cart/{variant_id}:1"
+
+def send_email(subject, body):
+    user = os.environ["SMTP_USERNAME"]
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg.set_content(body)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=TIMEOUT) as smtp:
+        smtp.login(user, os.environ["SMTP_PASSWORD"])
+        smtp.send_message(msg)
+
+def send_line(body):
+    r = requests.post(
+        "https://api.line.me/v2/bot/message/push",
+        headers={
+            "Authorization": "Bearer " + os.environ["LINE_CHANNEL_ACCESS_TOKEN"],
+            "Content-Type": "application/json",
+        },
+        json={"to": os.environ["LINE_USER_ID"],
+              "messages": [{"type": "text", "text": body[:5000]}]},
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+
+def notify(subject, body):
     errors = []
-
     try:
         send_email(subject, body)
         print("Email notification sent.")
-    except Exception as exc:
-        errors.append(f"Email: {exc}")
-
+    except Exception as e:
+        errors.append("Email: " + str(e))
     try:
         send_line(body)
         print("LINE notification sent.")
-    except Exception as exc:
-        errors.append(f"LINE: {exc}")
-
+    except Exception as e:
+        errors.append("LINE: " + str(e))
     if errors:
         raise RuntimeError(" / ".join(errors))
 
+def main():
+    s = session()
+    product = get_product(s)
+    html = get_page(s)
+    variants = variants_of(product)
+    sold_out = page_sold_out(html)
+    previous = load_state()
+    current = {}
+    details = {}
 
-def write_output(name: str, value: str) -> None:
-    path = os.getenv("GITHUB_OUTPUT")
+    for size in TARGET_SIZES:
+        v = variants[size]
+        cart_ok, cart_detail = (False, "JSON unavailable")
+        if v["available_json"]:
+            cart_ok, cart_detail = cart_add_check(v["id"])
+        purchasable = bool(v["available_json"] and cart_ok and not sold_out)
+        current[size] = purchasable
+        details[size] = {
+            "json_available": v["available_json"],
+            "page_sold_out": sold_out,
+            "cart_add_ok": cart_ok,
+            "cart_detail": cart_detail,
+            "purchasable": purchasable,
+        }
 
-    if path:
-        with open(path, "a", encoding="utf-8") as fp:
-            fp.write(f"{name}={value}\n")
+    print(json.dumps(details, ensure_ascii=False, indent=2))
+    print("Previous:", previous)
+    print("Current:", current)
 
-
-def main() -> int:
-    product = get_product()
-    page_html = get_product_page()
-
-    found, missing = find_target_variants(product)
-
-    print("Product:", product.get("title"))
-    print(json.dumps(found, ensure_ascii=False, indent=2))
-
-    if missing:
-        raise RuntimeError(
-            f"Target variants were not found: {', '.join(missing)}"
+    newly = [s for s in TARGET_SIZES if current[s] and not previous.get(s, False)]
+    if newly:
+        links = [f"{s}サイズ（1着）: {cart_url(variants[s]['id'])}" for s in newly]
+        size_text = "・".join(newly)
+        notify(
+            f"【TWICE入荷】VARSITY JACKET {size_text}サイズが購入可能です",
+            "購入可能状態への変化を検知しました。\n\n"
+            f"入荷サイズ: {size_text}\n\n" + "\n".join(links) +
+            "\n\n商品JSON、商品ページ表示、カート追加APIの3条件を確認しています。"
+            "\n在庫は決済完了まで確保されません。\n\n" + PRODUCT_URL
         )
+    else:
+        print("新たに購入可能になったサイズはありません。")
 
-    json_available_sizes = [
-        size
-        for size in TARGET_SIZES
-        if found[size]["available"]
-    ]
-
-    page_sold_out = page_says_product_sold_out(page_html)
-
-    print("JSON available sizes:", json_available_sizes)
-    print("Product page sold out:", page_sold_out)
-
-    # 商品ページがSold outなら、JSONがtrueでも通知しない
-    if page_sold_out:
-        print(
-            "The actual product page still says Sold out. "
-            "No notification will be sent."
-        )
-        write_output("restocked", "false")
-        return 0
-
-    # 商品ページが販売可能でも、対象サイズが特定できなければ誤通知防止のため通知しない
-    if not json_available_sizes:
-        print(
-            "The product page is not sold out, but no target size is "
-            "available in product JSON. No notification will be sent."
-        )
-        write_output("restocked", "false")
-        return 0
-
-    link_lines = [
-        f"{size}サイズ（1着）: {make_cart_url(found[size]['id'])}"
-        for size in json_available_sizes
-    ]
-
-    sizes_text = "・".join(json_available_sizes)
-
-    subject = (
-        f"【TWICE入荷】VARSITY JACKET "
-        f"{sizes_text}サイズが購入可能です"
-    )
-
-    body = (
-        "TWICE UKのVARSITY JACKETで、"
-        "購入可能なサイズを検知しました。\n\n"
-        f"入荷サイズ: {sizes_text}\n\n"
-        "購入したいサイズのリンクを開くと、"
-        "そのサイズ1着を入れたカートへ進みます。\n\n"
-        + "\n".join(link_lines)
-        + "\n\n"
-        "在庫はカート投入だけでは確保されません。"
-        "できるだけ早く決済してください。\n\n"
-        f"商品ページ: {PRODUCT_URL}"
-    )
-
-    notify(subject, body)
-
-    write_output("restocked", "true")
-    write_output(
-        "available_sizes",
-        ",".join(json_available_sizes),
-    )
-
+    if current != previous:
+        save_state(current)
+        print("State file updated.")
     return 0
-
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+    except Exception as e:
+        print("ERROR:", e, file=sys.stderr)
         sys.exit(1)
