@@ -1,0 +1,45 @@
+name: Watch TWICE varsity jacket stock
+
+on:
+  schedule:
+    - cron: "2/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  check-stock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - id: stock
+        name: Check stock and notify
+        env:
+          PRODUCT_URL: https://uk.twiceofficial.store/products/online-exclusive-varsity-jacket
+          TARGET_SIZES: S,M,L
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: "465"
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: python check_stock.py
+
+      - name: Stop watcher after successful restock alert
+        if: steps.stock.outputs.restocked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable "Watch TWICE varsity jacket stock"
