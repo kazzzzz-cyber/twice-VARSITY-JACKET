@@ -1,0 +1,78 @@
+name: Test email and LINE notifications
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-notification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Send test notifications
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import smtplib
+          import urllib.request
+          from email.message import EmailMessage
+
+          text = (
+              "TWICE VARSITY JACKET 在庫監視のテスト通知です。\n\n"
+              "このメッセージが届けば、通知設定は正常です。"
+          )
+
+          # Gmailテスト
+          msg = EmailMessage()
+          msg["Subject"] = "【テスト】TWICE在庫通知"
+          msg["From"] = os.environ["SMTP_USERNAME"]
+          msg["To"] = os.environ["EMAIL_TO"]
+          msg.set_content(text)
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
+              smtp.login(
+                  os.environ["SMTP_USERNAME"],
+                  os.environ["SMTP_PASSWORD"],
+              )
+              smtp.send_message(msg)
+
+          print("Email notification sent successfully.")
+
+          # LINEテスト
+          payload = json.dumps(
+              {
+                  "to": os.environ["LINE_USER_ID"],
+                  "messages": [
+                      {
+                          "type": "text",
+                          "text": text,
+                      }
+                  ],
+              }
+          ).encode("utf-8")
+
+          request = urllib.request.Request(
+              "https://api.line.me/v2/bot/message/push",
+              data=payload,
+              method="POST",
+              headers={
+                  "Authorization": (
+                      "Bearer "
+                      + os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+                  ),
+                  "Content-Type": "application/json",
+              },
+          )
+
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print("LINE status:", response.status)
+
+          print("LINE notification sent successfully.")
+          PY
