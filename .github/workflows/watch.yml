@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: twice-stock-watcher
@@ -26,6 +27,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Check stock and notify
+        id: check
         env:
           PRODUCT_URL: https://uk.twiceofficial.store/products/online-exclusive-varsity-jacket
           TARGET_SIZES: S,M,L
@@ -36,6 +38,13 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
         run: python check_stock.py
+      - name: Disable workflow after notification
+        if: steps.check.outputs.notified == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow disable "watch.yml" --repo "${{ github.repository }}"
+          echo "Workflow disabled after successful notification."
       - name: Save changed stock state
         run: |
           if git diff --quiet -- stock_state.json; then
