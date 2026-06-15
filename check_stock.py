@@ -114,7 +114,6 @@ def page_sold_out(html):
 
         candidate = text[start:end]
 
-        # 画像alt等ではなく、価格を含む実際の販売欄を採用する
         has_price = bool(
             re.search(
                 r"(Regular price|Sale price|£\s*150|150\.00)",
@@ -217,6 +216,13 @@ def send_line(body):
     )
     r.raise_for_status()
 
+def set_github_output(key, value):
+    """GitHub Actions の GITHUB_OUTPUT へ値を書き出す。"""
+    output_file = os.getenv("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write(f"{key}={value}\n")
+
 def notify(subject, body):
     errors = []
     try:
@@ -231,6 +237,8 @@ def notify(subject, body):
         errors.append("LINE: " + str(e))
     if errors:
         raise RuntimeError(" / ".join(errors))
+    # 通知成功 → workflow 自動停止のフラグをセット
+    set_github_output("notified", "true")
 
 def main():
     s = session()
