@@ -2,7 +2,8 @@ name: Watch TWICE varsity jacket stock
 
 on:
   schedule:
-    - cron: "*/50 * * * *"
+    - cron: '11 */2 * * *'   # 0分に 2時間ごと
+      timezone: 'Asia/Tokyo' # 必要に応じてローカルタイム指定
   workflow_dispatch:
 
 permissions:
